@@ -1,0 +1,130 @@
+method=/proc/kcore
+mode=diagnostic-only
+segment_count=18
+
+[segment 0]
+virt_addr=0xffffffffb5c00000
+phys_addr=0x42d800000
+file_offset=140736242659328
+file_size=52625408
+mem_size=52625408
+
+[segment 1]
+virt_addr=0xffffceb440000000
+phys_addr=0xffffffffffffffff
+file_offset=86536074833920
+file_size=35184372088831
+mem_size=35184372088831
+
+[segment 2]
+virt_addr=0xffffffffc0000000
+phys_addr=0xffffffffffffffff
+file_offset=140736414625792
+file_size=1056964608
+mem_size=1056964608
+
+[segment 3]
+virt_addr=0xffff8c2800001000
+phys_addr=0x1000
+file_offset=13365938241536
+file_size=380928
+mem_size=380928
+
+[segment 4]
+virt_addr=0xfffff8da80000000
+phys_addr=0xffffffffffffffff
+file_offset=132879845699584
+file_size=8192
+mem_size=8192
+
+[segment 5]
+virt_addr=0xffff8c280005f000
+phys_addr=0x5f000
+file_offset=13365938626560
+file_size=266240
+mem_size=266240
+
+[segment 6]
+virt_addr=0xffff8c2800100000
+phys_addr=0x100000
+file_offset=13365939286016
+file_size=1893687296
+mem_size=1893687296
+
+[segment 7]
+virt_addr=0xfffff8da80004000
+phys_addr=0xffffffffffffffff
+file_offset=132879845715968
+file_size=29589504
+mem_size=29589504
+
+[segment 8]
+virt_addr=0xffff8c2870ef7000
+phys_addr=0x70ef7000
+file_offset=13367832977408
+file_size=61440
+mem_size=61440
+
+[segment 9]
+virt_addr=0xffff8c2870f07000
+phys_addr=0x70f07000
+file_offset=13367833042944
+file_size=98123776
+mem_size=98123776
+
+[segment 10]
+virt_addr=0xfffff8da81c3c000
+phys_addr=0xffffffffffffffff
+file_offset=132879875305472
+file_size=1536000
+mem_size=1536000
+
+[segment 11]
+virt_addr=0xffff8c2876c9d000
+phys_addr=0x76c9d000
+file_offset=13367931174912
+file_size=134959104
+mem_size=134959104
+
+[segment 12]
+virt_addr=0xffff8c287ffff000
+phys_addr=0x7ffff000
+file_offset=13368085716992
+file_size=4096
+mem_size=4096
+
+[segment 13]
+virt_addr=0xfffff8da81fff000
+phys_addr=0xffffffffffffffff
+file_offset=132879879249920
+file_size=4096
+mem_size=4096
+
+[segment 14]
+virt_addr=0xffff8c2888000000
+phys_addr=0x88000000
+file_offset=13368219938816
+file_size=2097152
+mem_size=2097152
+
+[segment 15]
+virt_addr=0xfffff8da82200000
+phys_addr=0xffffffffffffffff
+file_offset=132879881351168
+file_size=32768
+mem_size=32768
+
+[segment 16]
+virt_addr=0xffff8c2900000000
+phys_addr=0x100000000
+file_offset=13370233204736
+file_size=14722007040
+mem_size=14722007040
+
+[segment 17]
+virt_addr=0xfffff8da84000000
+phys_addr=0xffffffffffffffff
+file_offset=132879912808448
+file_size=230031360
+mem_size=230031360
+

@@ -1,17 +1,18 @@
 #ifndef RAMDUMPER_DUMP_STRATEGY_H
 #define RAMDUMPER_DUMP_STRATEGY_H
 
-#include <string>
+#include <cstddef>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace MemoryDump {
 
-    // Результат операции дампа
+    // Результат операции
     struct DumpResult {
         bool success;
         std::string error_message;
-        size_t bytes_dumped;
+        std::size_t bytes_dumped;
         std::string output_path;
     };
 
@@ -24,26 +25,19 @@ namespace MemoryDump {
         std::string description;
     };
 
-    // Абстрактная стратегия (Strategy Pattern)
+    // Абстрактная стратегия
     class IDumpStrategy {
     public:
-        virtual ~IDumpStrategy() = default;
+        virtual ~IDumpStrategy() {}
 
-        // Попытка создать дамп
         virtual DumpResult dump(const std::string& output_path) = 0;
-
-        // Проверка доступности метода на текущей системе
         virtual bool isAvailable() const = 0;
-
-        // Информация о стратегии
         virtual StrategyInfo getInfo() const = 0;
-
-        // Имя метода для логирования
         virtual std::string getName() const = 0;
     };
 
-    using StrategyPtr = std::unique_ptr<IDumpStrategy>;
+    typedef std::unique_ptr<IDumpStrategy> StrategyPtr;
 
 } // namespace MemoryDump
 
-#endif //RAMDUMPER_DUMP_STRATEGY_H
+#endif // RAMDUMPER_DUMP_STRATEGY_H

@@ -1,211 +1,195 @@
 #include "kcore_strategy.h"
-#include <fstream>
-#include <sys/stat.h>
-#include <sys/mman.h>
-#include <fcntl.h>
-#include <unistd.h>
+
 #include <elf.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <vector>
 
 namespace MemoryDump {
 
 bool KCoreStrategy::isAvailable() const {
-    // Проверка Lockdown
-    std::ifstream lockdown("/sys/kernel/security/lockdown");
-    std::string content;
-    if (lockdown) {
-        std::getline(lockdown, content);
-        if (content.find("[integrity]") != std::string::npos ||
-            content.find("[confidentiality]") != std::string::npos) {
-            std::cerr << "[WARNING] Kernel Lockdown is active - /proc/kcore may be restricted\n";
-            // Не возвращаем false, пробуем anyway
-            }
-    }
-
     struct stat st;
     if (stat("/proc/kcore", &st) != 0) {
         return false;
     }
 
-    // Проверка прав доступа
-    int fd = open("/proc/kcore", O_RDONLY);
+    const int fd = open("/proc/kcore", O_RDONLY);
     if (fd < 0) {
         return false;
     }
+
     close(fd);
     return true;
 }
 
 StrategyInfo KCoreStrategy::getInfo() const {
-    return {
-        .name = "/proc/kcore",
-        .priority = 1,
-        .requires_root = true,
-        .requires_module = false,
-        .description = "ELF core dump of kernel memory (user-space)"
+    return StrategyInfo{
+        "/proc/kcore",
+        1,
+        true,
+        false,
+        "ELF metadata diagnostics for kernel core view"
     };
 }
 
-// Парсинг ELF заголовков для получения сегментов памяти
 bool KCoreStrategy::parseElfSegments(const std::string& kcore_path,
-                                     std::vector<Segment>& segments) {
-    int fd = open(kcore_path.c_str(), O_RDONLY);
+                                     std::vector<Segment>& segments,
+                                     std::string& error_message) const {
+    const int fd = open(kcore_path.c_str(), O_RDONLY);
     if (fd < 0) {
+        error_message = "Failed to open /proc/kcore";
         return false;
     }
 
-    // Читаем ELF заголовок
     Elf64_Ehdr ehdr;
-    if (read(fd, &ehdr, sizeof(ehdr)) != sizeof(ehdr)) {
+    const ssize_t ehdr_read = read(fd, &ehdr, sizeof(ehdr));
+    if (ehdr_read != static_cast<ssize_t>(sizeof(ehdr))) {
         close(fd);
+        error_message = "Failed to read ELF header";
         return false;
     }
 
-    // Проверка магического числа ELF
-    if (memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0) {
+    if (std::memcmp(ehdr.e_ident, ELFMAG, SELFMAG) != 0) {
         close(fd);
+        error_message = "Not an ELF file";
         return false;
     }
 
-    // Читаем заголовки программ (Program Headers)
-    std::vector<Elf64_Phdr> phdrs(ehdr.e_phnum);
-
-    if (lseek(fd, ehdr.e_phoff, SEEK_SET) < 0) {
+    if (ehdr.e_ident[EI_CLASS] != ELFCLASS64) {
         close(fd);
+        error_message = "Unsupported ELF class (expected ELF64)";
         return false;
     }
 
-    if (read(fd, phdrs.data(), ehdr.e_phnum * sizeof(Elf64_Phdr))
-        != static_cast<ssize_t>(ehdr.e_phnum * sizeof(Elf64_Phdr))) {
+    if (ehdr.e_phentsize != sizeof(Elf64_Phdr)) {
         close(fd);
+        error_message = "Unexpected program header size";
         return false;
     }
 
-    // Отбираем только сегменты PT_LOAD (загружаемые сегменты памяти)
-    for (const auto& phdr : phdrs) {
-        if (phdr.p_type == PT_LOAD) {
-            Segment seg;
-            seg.phys_addr = phdr.p_paddr;  // Физический адрес
-            seg.virt_addr = phdr.p_vaddr;  // Виртуальный адрес
-            seg.size = phdr.p_memsz;       // Размер сегмента
-            seg.offset = phdr.p_offset;    // Смещение в файле kcore
+    if (ehdr.e_phnum == 0) {
+        close(fd);
+        error_message = "No program headers found";
+        return false;
+    }
 
-            // Фильтруем сегменты: нам нужна только реальная RAM
-            // Обычно сегменты с p_paddr > 0 и разумного размера - это RAM
-            if (seg.size > 0 && seg.size < (1024ULL * 1024 * 1024 * 1024)) { // < 1TB
-                segments.push_back(seg);
-            }
+    if (lseek(fd, static_cast<off_t>(ehdr.e_phoff), SEEK_SET) < 0) {
+        close(fd);
+        error_message = "Failed to seek to program headers";
+        return false;
+    }
+
+    std::vector<Elf64_Phdr> phdrs(static_cast<std::size_t>(ehdr.e_phnum));
+    const std::size_t total_phdr_bytes = phdrs.size() * sizeof(Elf64_Phdr);
+
+    const ssize_t phdr_read = read(fd, phdrs.data(), total_phdr_bytes);
+    if (phdr_read != static_cast<ssize_t>(total_phdr_bytes)) {
+        close(fd);
+        error_message = "Failed to read program headers";
+        return false;
+    }
+
+    for (std::size_t i = 0; i < phdrs.size(); ++i) {
+        const Elf64_Phdr& phdr = phdrs[i];
+        if (phdr.p_type != PT_LOAD) {
+            continue;
+        }
+
+        Segment seg;
+        seg.phys_addr = phdr.p_paddr;
+        seg.virt_addr = phdr.p_vaddr;
+        seg.mem_size = phdr.p_memsz;
+        seg.file_size = phdr.p_filesz;
+        seg.offset = phdr.p_offset;
+
+        if (seg.mem_size == 0 && seg.file_size == 0) {
+            continue;
+        }
+
+        segments.push_back(seg);
+
+        if (progress_callback_) {
+            progress_callback_(i + 1, phdrs.size());
         }
     }
 
     close(fd);
-    return !segments.empty();
+
+    if (segments.empty()) {
+        error_message = "No PT_LOAD segments found";
+        return false;
+    }
+
+    return true;
 }
 
-// Чтение и запись сегментов с прогрессом
-bool KCoreStrategy::readAndWriteSegments(const std::string& kcore_path,
-                                         const std::string& output_path,
-                                         const std::vector<Segment>& segments,
-                                         size_t& bytes_dumped) {
-    int kcore_fd = open(kcore_path.c_str(), O_RDONLY);
-    if (kcore_fd < 0) {
-        return false;
-    }
-
-    std::ofstream output(output_path, std::ios::binary);
+bool KCoreStrategy::writeReport(const std::string& output_path,
+                                const std::vector<Segment>& segments,
+                                std::size_t& bytes_described,
+                                std::string& error_message) const {
+    std::ofstream output(output_path.c_str(),
+                         std::ios::out | std::ios::trunc);
     if (!output) {
-        close(kcore_fd);
+        error_message = "Failed to create report file";
         return false;
     }
 
-    bytes_dumped = 0;
-    constexpr size_t BUFFER_SIZE = 1024 * 1024; // 1MB буфер
-    std::vector<char> buffer(BUFFER_SIZE);
+    bytes_described = 0;
 
-    size_t total_size = 0;
-    for (const auto& seg : segments) {
-        total_size += seg.size;
+    output << "method=/proc/kcore\n";
+    output << "mode=diagnostic-only\n";
+    output << "segment_count=" << segments.size() << "\n\n";
+
+    for (std::size_t i = 0; i < segments.size(); ++i) {
+        const Segment& seg = segments[i];
+
+        output << "[segment " << i << "]\n";
+        output << "virt_addr=0x" << std::hex << seg.virt_addr << std::dec << '\n';
+        output << "phys_addr=0x" << std::hex << seg.phys_addr << std::dec << '\n';
+        output << "file_offset=" << seg.offset << '\n';
+        output << "file_size=" << seg.file_size << '\n';
+        output << "mem_size=" << seg.mem_size << "\n\n";
+
+        bytes_described += static_cast<std::size_t>(seg.file_size);
     }
 
-    // Читаем каждый сегмент
-    for (const auto& seg : segments) {
-        if (lseek(kcore_fd, static_cast<off_t>(seg.offset), SEEK_SET) < 0) {
-            close(kcore_fd);
-            return false;
-        }
-
-        size_t remaining = seg.size;
-        while (remaining > 0) {
-            size_t to_read = std::min(remaining, BUFFER_SIZE);
-            ssize_t read_bytes = read(kcore_fd, buffer.data(), to_read);
-
-            if (read_bytes < 0) {
-                // Ошибка чтения (может быть из-за Lockdown или защиты памяти)
-                // Продолжаем чтение следующих сегментов
-                break;
-            }
-
-            if (read_bytes == 0) {
-                break; // Конец сегмента
-            }
-
-            output.write(buffer.data(), read_bytes);
-            if (!output) {
-                close(kcore_fd);
-                return false;
-            }
-
-            bytes_dumped += static_cast<size_t>(read_bytes);
-            remaining -= static_cast<size_t>(read_bytes);
-
-            // Callback прогресса
-            if (progress_callback_) {
-                progress_callback_(bytes_dumped, total_size);
-            }
-        }
+    if (!output) {
+        error_message = "Failed while writing report";
+        return false;
     }
 
-    close(kcore_fd);
     return true;
 }
 
 DumpResult KCoreStrategy::dump(const std::string& output_path) {
     DumpResult result{false, "", 0, output_path};
 
-    const std::string kcore_path = "/proc/kcore";
-
     if (!isAvailable()) {
-        result.error_message = "/proc/kcore is not available or accessible";
+        result.error_message = "/proc/kcore is not available or inaccessible";
         return result;
     }
 
     std::vector<Segment> segments;
-    if (!parseElfSegments(kcore_path, segments)) {
-        result.error_message = "Failed to parse ELF segments from /proc/kcore";
+    std::string error_message;
+
+    if (!parseElfSegments("/proc/kcore", segments, error_message)) {
+        result.error_message = error_message;
         return result;
     }
 
-    std::cout << "[INFO] Found " << segments.size() << " memory segments\n";
+    std::cout << "[INFO] Found " << segments.size() << " PT_LOAD segments\n";
 
-    size_t total_ram = 0;
-    for (const auto& seg : segments) {
-        total_ram += seg.size;
-    }
-    std::cout << "[INFO] Total RAM to dump: " << (total_ram / 1024 / 1024) << " MB\n";
-
-    if (!readAndWriteSegments(kcore_path, output_path, segments, result.bytes_dumped)) {
-        result.error_message = "Failed to read/write memory segments";
+    if (!writeReport(output_path, segments, result.bytes_dumped, error_message)) {
+        result.error_message = error_message;
         return result;
     }
 
-    result.success = (result.bytes_dumped > 0);
-    
-    if (!result.success) {
-        result.error_message = "No data read from /proc/kcore (possibly blocked by Lockdown)";
-    }
-    
+    result.success = true;
     return result;
 }
 

@@ -1,11 +1,11 @@
 #ifndef RAMDUMPER_KCORE_STRATEGY_H
 #define RAMDUMPER_KCORE_STRATEGY_H
 
-#include <cstdint>
-
 #include "dump_strategy.h"
-#include <vector>
+
+#include <cstdint>
 #include <functional>
+#include <vector>
 
 namespace MemoryDump {
 
@@ -18,30 +18,31 @@ namespace MemoryDump {
         StrategyInfo getInfo() const override;
         std::string getName() const override { return "/proc/kcore"; }
 
-        // Установить callback прогресса
         void setProgressCallback(std::function<void(size_t, size_t)> callback) {
             progress_callback_ = std::move(callback);
         }
 
     private:
         struct Segment {
-            uint64_t phys_addr;
-            uint64_t virt_addr;
-            size_t size;
-            size_t offset;
+            std::uint64_t phys_addr;
+            std::uint64_t virt_addr;
+            std::uint64_t mem_size;
+            std::uint64_t file_size;
+            std::uint64_t offset;
         };
 
         bool parseElfSegments(const std::string& kcore_path,
-                              std::vector<Segment>& segments);
+                              std::vector<Segment>& segments,
+                              std::string& error_message) const;
 
-        bool readAndWriteSegments(const std::string& kcore_path,
-                                  const std::string& output_path,
-                                  const std::vector<Segment>& segments,
-                                  size_t& bytes_dumped);
+        bool writeReport(const std::string& output_path,
+                         const std::vector<Segment>& segments,
+                         std::size_t& bytes_described,
+                         std::string& error_message) const;
 
         std::function<void(size_t, size_t)> progress_callback_;
     };
 
 } // namespace MemoryDump
 
-#endif //RAMDUMPER_KCORE_STRATEGY_H
+#endif // RAMDUMPER_KCORE_STRATEGY_H

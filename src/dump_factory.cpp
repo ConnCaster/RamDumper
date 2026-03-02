@@ -1,19 +1,17 @@
 #include "dump_factory.h"
-#include "kcore_strategy.h"
 #include "crash_strategy.h"
+#include "kcore_strategy.h"
 
 #include <algorithm>
+#include <memory>
 
 namespace MemoryDump {
 
     std::vector<StrategyPtr> DumpFactory::createStrategyChain() {
         std::vector<StrategyPtr> chain;
+        chain.push_back(StrategyPtr(new KCoreStrategy()));
+        chain.push_back(StrategyPtr(new CrashStrategy()));
 
-        // Создаем стратегии в порядке приоритета
-        chain.push_back(std::make_unique<KCoreStrategy>());
-        chain.push_back(std::make_unique<CrashStrategy>());
-
-        // Сортируем по приоритету
         std::sort(chain.begin(), chain.end(),
                   [](const StrategyPtr& a, const StrategyPtr& b) {
                       return a->getInfo().priority < b->getInfo().priority;
@@ -24,16 +22,21 @@ namespace MemoryDump {
 
     StrategyPtr DumpFactory::createStrategy(const std::string& name) {
         if (name == "/proc/kcore" || name == "kcore") {
-            return std::make_unique<KCoreStrategy>();
+            return StrategyPtr(new KCoreStrategy());
         }
+
         if (name == "/dev/crash" || name == "crash") {
-            return std::make_unique<CrashStrategy>();
+            return StrategyPtr(new CrashStrategy());
         }
-        return nullptr;
+
+        return StrategyPtr();
     }
 
     std::vector<std::string> DumpFactory::getAvailableMethods() {
-        return {"/proc/kcore", "/dev/crash"};
+        std::vector<std::string> methods;
+        methods.push_back("/proc/kcore");
+        methods.push_back("/dev/crash");
+        return methods;
     }
 
 } // namespace MemoryDump

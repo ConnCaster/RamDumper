@@ -2,7 +2,6 @@
 
 #include <fstream>
 #include <sys/stat.h>
-#include <iostream>
 
 namespace MemoryDump {
 
@@ -17,57 +16,43 @@ namespace MemoryDump {
     }
 
     StrategyInfo CrashStrategy::getInfo() const {
-        return {
-            .name = "/dev/crash",
-            .priority = 2,
-            .requires_root = true,
-            .requires_module = true,
-            .description = "Physical memory access via crash driver"
+        return StrategyInfo{
+            "/dev/crash",
+            2,
+            true,
+            true,
+            "Crash driver availability diagnostics"
         };
     }
 
     DumpResult CrashStrategy::dump(const std::string& output_path) {
         DumpResult result{false, "", 0, output_path};
 
-        const std::string crash_path = "/dev/crash";
-
         if (!isAvailable()) {
-            result.error_message = "/dev/crash is not available (driver not loaded?)";
+            result.error_message = "/dev/crash is not available (driver not loaded or inaccessible)";
             return result;
         }
 
-        std::ifstream input(crash_path, std::ios::binary);
-        if (!input) {
-            result.error_message = "Failed to open /dev/crash";
-            return result;
-        }
-
-        std::ofstream output(output_path, std::ios::binary);
+        std::ofstream output(output_path.c_str(),
+                             std::ios::out | std::ios::trunc);
         if (!output) {
-            result.error_message = "Failed to create output file";
+            result.error_message = "Failed to create report file";
             return result;
         }
 
-        // В реальной реализации: постраничное чтение с использованием ioctl
-        // для получения информации о страницах
+        output << "method=/dev/crash\n";
+        output << "available=yes\n";
+        output << "mode=diagnostic-only\n";
+        output << "note=Live memory extraction is disabled in this build. "
+                  "Use authorized crash dump workflows (e.g. kdump/vmcore) for offline analysis.\n";
 
-        constexpr size_t BUFFER_SIZE = 1024 * 1024;
-        std::vector<char> buffer(BUFFER_SIZE);
-        size_t total_read = 0;
-
-        // Упрощенное чтение
-        while (input) {
-            input.read(buffer.data(), BUFFER_SIZE);
-            size_t bytes_read = input.gcount();
-            if (bytes_read > 0) {
-                output.write(buffer.data(), bytes_read);
-                total_read += bytes_read;
-            }
+        if (!output) {
+            result.error_message = "Failed while writing report";
+            return result;
         }
 
-        result.success = (total_read > 0);
-        result.bytes_dumped = total_read;
-
+        result.success = true;
+        result.bytes_dumped = 0;
         return result;
     }
 
