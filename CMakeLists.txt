@@ -18,3 +18,6 @@ include_directories(include)
 
 # Исполняемый файл
 add_executable(MemoryDumper ${SOURCES})
+
+add_executable(test main_avml.cpp)
+add_executable(AVML AVML.cpp)
