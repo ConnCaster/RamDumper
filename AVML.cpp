@@ -506,29 +506,43 @@ static void dump_from_phys(const std::vector<Range64>& mem_ranges,
 
 // ------------------ Source selection (Rust-equivalent for "dump.lime") ------------------
 
+// ------------------ Source selection with verbose logging ------------------
+
 static int run_dump(const std::string& dst_path) {
     std::vector<Range64> ranges = parse_iomem_system_ram();
 
-    // Rust create():
-    // for destination != stdout:
-    // try /dev/crash, then /proc/kcore, then /dev/mem; collect reasons.
+    std::cerr << "[*] Parsed " << ranges.size() << " System RAM range(s) from /proc/iomem\n";
+
     std::string crash_err, kcore_err, mem_err;
 
-    auto try_method = [&](auto&& fn, std::string& out_err) -> bool {
+    // Helper lambda with verbose output
+    auto try_method = [&](const char* name, auto&& fn, std::string& out_err) -> bool {
+        std::cerr << "[*] Trying " << name << "...\n";
         try {
             fn();
+            std::cerr << "[✓] Success: " << name << "\n";
+            struct stat st{};
+            if (::stat(dst_path.c_str(), &st) == 0) {
+                std::cerr << "    Output size: " << st.st_size << " bytes\n";
+            }
             return true;
         } catch (const std::exception& e) {
             out_err = std::string("    ") + e.what();
+            std::cerr << "[✗] Failed: " << name << " — " << e.what() << "\n";
             return false;
         }
     };
 
-    if (try_method([&]{ dump_from_phys(ranges, "/dev/crash", dst_path); }, crash_err)) return 0;
-    if (try_method([&]{ dump_from_kcore(ranges, dst_path); }, kcore_err)) return 0;
-    if (try_method([&]{ dump_from_phys(ranges, "/dev/mem", dst_path); }, mem_err)) return 0;
+    if (try_method("/dev/crash", [&]{ dump_from_phys(ranges, "/dev/crash", dst_path); }, crash_err))
+        return 0;
 
-    std::cerr << "error: unable to create memory snapshot\n";
+    if (try_method("/proc/kcore", [&]{ dump_from_kcore(ranges, dst_path); }, kcore_err))
+        return 0;
+
+    if (try_method("/dev/mem", [&]{ dump_from_phys(ranges, "/dev/mem", dst_path); }, mem_err))
+        return 0;
+
+    std::cerr << "\n[!] Error: unable to create memory snapshot with any method\n";
     std::cerr << "    \n";
     std::cerr << crash_err << "\n";
     std::cerr << kcore_err << "\n";
