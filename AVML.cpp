@@ -644,60 +644,78 @@ namespace avml {
         virtual int Dump(const std::vector<Range64>& memoryRanges,const std::string& destinationPath) = 0;
     };
 
-    /*class PhysicalMemoryDumpStrategy : public IDumpStrategy
-    {
-    public:
-        explicit PhysicalMemoryDumpStrategy(std::string sourcePath)
-            : sourcePath_(std::move(sourcePath))
-        {
+    class PhysicalMemoryDumpStrategy : public IDumpStrategy {
+public:
+    explicit PhysicalMemoryDumpStrategy(const std::string& source_path)
+        : source_path_(source_path)
+    {}
+
+    std::string Name() const override {
+        return source_path_;
+    }
+
+    int Dump(const std::vector<Range64>& memoryRanges, const std::string& destinationPath) override {
+        // Проверка доступности источника
+        if (!PosixUtil::CanOpenReadOnly(source_path_.c_str())) {
+            std::cerr << "cannot open source: " << source_path_ << std::endl;
+            return 1;
         }
 
-        const char* name() const override
-        {
-            return sourcePath_.c_str();
-        }
+        const bool isCrash = (source_path_ == "/dev/crash");
+        const bool alignSrc = (source_path_ == "/dev/crash" ||
+                               source_path_ == "/dev/mem" ||
+                               source_path_ == "/proc/kcore");
 
-        void dump(
-            const std::vector<Range64>& memoryRanges,
-            const std::string& destinationPath
-        ) override
-        {
-            const bool isCrash = (sourcePath_ == "/dev/crash");
-            const bool alignSrc =
-            (sourcePath_ == "/dev/crash" ||
-                sourcePath_ == "/dev/mem" ||
-                sourcePath_ == "/proc/kcore");
-
-            FileReader src(sourcePath_, alignSrc);
+        try {
+            FileReader src(source_path_, alignSrc);
             FileWriter dst(destinationPath);
 
-            for (const auto& r : memoryRanges)
-            {
+            for (const auto& r : memoryRanges) {
+                // Пропускаем пустые диапазоны
+                if (r.Empty()) {
+                    continue;
+                }
+
                 Block block;
                 block.offset = r.start;
 
-                if (isCrash)
-                {
+                // Для /dev/crash выравниваем конец по странице
+                if (isCrash) {
                     const uint64_t endAligned = (r.end >> 12) << 12;
+                    if (endAligned <= r.start) {
+                        continue;  // Пропускаем слишком маленькие диапазоны
+                    }
                     block.range = Range64{r.start, endAligned};
-                }
-                else
-                {
+                } else {
                     block.range = r;
                 }
 
-                if (block.offset > 0)
-                {
-                    src.SeekTo(block.offset);
+                // Seek только если нужно (оптимизация)
+                if (block.offset > 0) {
+                    if (src.SeekTo(block.offset) != 0) {
+                        std::cerr << "failed to seek to offset " << block.offset << std::endl;
+                        return 1;
+                    }
                 }
 
-                MemoryCopier::copyBlockV1(src, dst, block.range);
+                if (MemoryCopier::CopyBlock(src, dst, block.range) != 0) {
+                    std::cerr << "failed to copy block ["
+                              << block.range.start << "-" << block.range.end << "]"
+                              << std::endl;
+                    return 1;
+                }
             }
+            return 0;
         }
+        catch (const std::exception& e) {
+            std::cerr << "error in " << source_path_ << ": " << e.what() << std::endl;
+            return 1;
+        }
+    }
 
-    private:
-        std::string sourcePath_;
-    };*/
+private:
+    std::string source_path_;
+};
 
     class KCoreDumpStrategy : public IDumpStrategy {
     public:
@@ -762,9 +780,9 @@ namespace avml {
     public:
         explicit DumpManager(const std::string& dump_file_path)
             : dump_file_path_(dump_file_path) {
-            // strategies.push_back(std::make_unique<PhysicalMemoryDumpStrategy>("/dev/crash"));
+            strategies_.push_back(std::make_unique<PhysicalMemoryDumpStrategy>("/dev/crash"));
             strategies_.push_back(std::make_unique<KCoreDumpStrategy>());
-            // strategies.push_back(std::make_unique<PhysicalMemoryDumpStrategy>("/dev/mem"));
+            strategies_.push_back(std::make_unique<PhysicalMemoryDumpStrategy>("/dev/mem"));
         }
         ~DumpManager() override = default;
 
