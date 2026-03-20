@@ -776,15 +776,15 @@ private:
         virtual ModuleResult Run() = 0;
     };
 
-    class DumpManager final: public IModuleImpl {
+    class DumpModuleImpl final: public IModuleImpl {
     public:
-        explicit DumpManager(const std::string& dump_file_path)
+        explicit DumpModuleImpl(const std::string& dump_file_path)
             : dump_file_path_(dump_file_path) {
             strategies_.push_back(std::make_unique<PhysicalMemoryDumpStrategy>("/dev/crash"));
             strategies_.push_back(std::make_unique<KCoreDumpStrategy>());
             strategies_.push_back(std::make_unique<PhysicalMemoryDumpStrategy>("/dev/mem"));
         }
-        ~DumpManager() override = default;
+        ~DumpModuleImpl() override = default;
 
         ModuleResult Run() override {
             std::optional<std::vector<Range64>> ranges = io_mem_parser_.ParseSystemRam();
@@ -816,7 +816,7 @@ int main() {
 
     try {
         const std::string dst = "dump.lime";
-        avml::DumpManager manager(dst);
+        avml::DumpModuleImpl manager(dst);
         avml::ModuleResult ret = manager.Run();
         return (ret != avml::ModuleResult::kError) ? 0 : 1;
     }
