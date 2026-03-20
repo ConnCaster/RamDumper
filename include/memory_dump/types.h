@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-namespace avml {
+namespace memory_dump {
 
 
 /**

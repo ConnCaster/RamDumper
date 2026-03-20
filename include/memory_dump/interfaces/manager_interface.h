@@ -1,7 +1,7 @@
 #ifndef DUMP_MANAGER_INTERFACE_H
 #define DUMP_MANAGER_INTERFACE_H
 
-#include "avml/types.h"
+#include "memory_dump/types.h"
 
 /**
  * @file dump_manager_interface.h
@@ -15,7 +15,7 @@
  * реализациями дамп-модулей (например, для разных форматов
  * или методов сжатия).
  */
-namespace avml {
+namespace memory_dump {
 
 /**
  * @brief Интерфейс управляющего модуля.

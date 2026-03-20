@@ -1,4 +1,4 @@
-#include "avml/parsers.h"
+#include "memory_dump/parsers.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -7,7 +7,7 @@
 #include <iostream>
 #include <limits>
 
-namespace avml {
+namespace memory_dump {
 
 std::optional<std::vector<Range64>> IoMemParser::ParseSystemRam() const {
     std::ifstream file(path_);

@@ -3,10 +3,10 @@
 
 #include <vector>
 
-#include "avml/types.h"
-#include "avml/file_io.h"
+#include "memory_dump/types.h"
+#include "memory_dump/file_io.h"
 
-namespace avml {
+namespace memory_dump {
 
 /**
  * @brief Класс для копирования блоков физической памяти.

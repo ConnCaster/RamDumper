@@ -4,10 +4,10 @@
 #include <limits>
 #include <vector>
 
-#include "avml/copier.h"
-#include "avml/parsers.h"
+#include "memory_dump/copier.h"
+#include "memory_dump/parsers.h"
 
-namespace avml {
+namespace memory_dump {
 
 int MemoryCopier::CopyBlock(FileReader& src, FileWriter& dst, const Range64& range) {
     if (LimeFormatWriter::WriteHeader(dst, range) != 0) return 1;

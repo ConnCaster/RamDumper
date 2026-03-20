@@ -5,12 +5,12 @@
 #include <string>
 #include <vector>
 
-#include "avml/interfaces/manager_interface.h"
-#include "avml/types.h"
-#include "avml/strategies.h"
-#include "avml/parsers.h"
+#include "memory_dump/interfaces/manager_interface.h"
+#include "memory_dump/types.h"
+#include "memory_dump/strategies.h"
+#include "memory_dump/parsers.h"
 
-namespace avml {
+namespace memory_dump {
 
 /**
  * @brief Управляющий модуль для создания дампа памяти.

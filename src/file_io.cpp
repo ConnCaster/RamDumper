@@ -1,4 +1,4 @@
-#include "avml/file_io.h"
+#include "memory_dump/file_io.h"
 
 #include <cerrno>
 #include <fcntl.h>
@@ -9,7 +9,7 @@
 
 namespace fs = std::filesystem;
 
-namespace avml {
+namespace memory_dump {
 
 std::string PosixUtil::SysError(const std::string& what) {
     std::error_code err_code(errno, std::generic_category());

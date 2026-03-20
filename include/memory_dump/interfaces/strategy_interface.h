@@ -3,7 +3,7 @@
 
 #include <vector>
 #include <string>
-#include "avml/types.h"
+#include "memory_dump/types.h"
 
 
 /**
@@ -20,7 +20,7 @@
  * - Способ доступа к памяти (прямой доступ, ELF-парсинг)
  * - Правила выравнивания и обработки адресов
  */
-namespace avml {
+namespace memory_dump {
 
 /**
  * @brief Интерфейс стратегии дампа памяти.
@@ -59,7 +59,7 @@ public:
      * @note Реализации должны выводить диагностику в std::cerr
      * @note При ошибке возможно частичное копирование (не рекомендуется)
      */
-    virtual int Dump(const std::vector<avml::Range64>& memoryRanges,const std::string& destinationPath) = 0;
+    virtual int Dump(const std::vector<memory_dump::Range64>& memoryRanges,const std::string& destinationPath) = 0;
 };
 
 } // namespace avml

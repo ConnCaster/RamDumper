@@ -1,11 +1,11 @@
-#include "avml/strategies.h"
-#include "avml/file_io.h"
-#include "avml/parsers.h"
-#include "avml/copier.h"
+#include "memory_dump/strategies.h"
+#include "memory_dump/file_io.h"
+#include "memory_dump/parsers.h"
+#include "memory_dump/copier.h"
 
 #include <iostream>
 
-namespace avml {
+namespace memory_dump {
 
 PhysicalMemoryDumpStrategy::PhysicalMemoryDumpStrategy(std::string source_path)
     : source_path_(std::move(source_path)) {}

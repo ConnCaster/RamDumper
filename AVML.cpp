@@ -21,7 +21,7 @@
 
 namespace fs = std::filesystem;
 
-namespace avml {
+namespace memory_dump {
     static constexpr size_t PAGE_SIZE = 0x1000;
     static constexpr uint64_t MAX_BLOCK_SIZE = 0x1000ULL * 0x1000ULL; // 16MB
     static constexpr uint32_t LIME_MAGIC = 0x4c694d45u; // "EMiL" as u32le
@@ -816,9 +816,9 @@ int main() {
 
     try {
         const std::string dst = "dump.lime";
-        avml::DumpModuleImpl manager(dst);
-        avml::ModuleResult ret = manager.Run();
-        return (ret != avml::ModuleResult::kError) ? 0 : 1;
+        memory_dump::DumpModuleImpl manager(dst);
+        memory_dump::ModuleResult ret = manager.Run();
+        return (ret != memory_dump::ModuleResult::kError) ? 0 : 1;
     }
     catch (const std::exception& e) {
         std::cerr << "fatal: " << e.what() << '\n';

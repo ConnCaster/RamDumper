@@ -1,8 +1,8 @@
 #include <iostream>
 
-#include "avml/manager.h"
+#include "memory_dump/manager.h"
 
-namespace avml {
+namespace memory_dump {
 
     DumpModuleImpl::DumpModuleImpl(const std::string& dump_file_path)
         : dump_file_path_(dump_file_path)

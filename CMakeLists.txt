@@ -10,8 +10,8 @@ set(SOURCES
     src/copier.cpp
     src/strategies.cpp
     src/manager.cpp
-        include/avml/interfaces/manager_interface.h
-        include/avml/interfaces/strategy_interface.h
+        include/memory_dump/interfaces/manager_interface.h
+        include/memory_dump/interfaces/strategy_interface.h
 )
 
 add_executable(test main_avml.cpp)

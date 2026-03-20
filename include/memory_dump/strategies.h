@@ -4,10 +4,10 @@
 #include <string>
 #include <vector>
 
-#include "avml/interfaces/strategy_interface.h"
-#include "avml/types.h"
+#include "memory_dump/interfaces/strategy_interface.h"
+#include "memory_dump/types.h"
 
-namespace avml {
+namespace memory_dump {
 
 /**
  * @brief Стратегия дампа из устройств физической памяти.
