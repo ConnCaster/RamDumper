@@ -5,9 +5,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <fstream>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <sys/stat.h>
@@ -15,6 +17,9 @@
 #include <unistd.h>
 #include <utility>
 #include <vector>
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 namespace avml {
     static constexpr size_t PAGE_SIZE = 0x1000;
@@ -49,10 +54,24 @@ namespace avml {
     class PosixUtil {
     public:
         static std::string SysError(const std::string& what) {
-            return what + ": " + std::strerror(errno);
+            std::error_code err_code(errno, std::generic_category());
+            return what + ": " + err_code.message();
         }
 
         static bool CanOpenReadOnly(const char* path) {
+            std::error_code ec;
+            auto perms = fs::status(path, ec);
+
+            if (ec) {
+                return false;
+            }
+
+            // Проверяем, что файл существует и читаем
+            if (!fs::is_regular_file(perms)) {
+                return false;
+            }
+
+            // Попытка открыть для проверки прав
             int fd = open(path, O_RDONLY | O_CLOEXEC);
             if (fd >= 0) {
                 close(fd);
@@ -61,12 +80,23 @@ namespace avml {
             return false;
         }
 
+
+        static constexpr uint64_t kMinKCoreSize = 8 * 1024;
+        /*
+            /proc/kcore - ELF-файл с заголовками ядра
+            Минимальный размер:
+                - ELF-заголовок: 64 байта
+                - Program headers: несколько × 56 байт
+                - Хотя бы одна страница памяти: 4 КБ
+                - Итого: ~8 КБ разумный минимум
+            Если меньше -> файл повреждён или недоступен
+         */
         static bool IsKCoreOk() {
             struct stat st{};
             if (stat("/proc/kcore", &st) != 0) {
                 return false;
             }
-            if (static_cast<uint64_t>(st.st_size) <= 0x2000) {
+            if (static_cast<uint64_t>(st.st_size) <= kMinKCoreSize) {
                 return false;
             }
             return CanOpenReadOnly("/proc/kcore");
@@ -75,12 +105,12 @@ namespace avml {
 
     class FileReader {
     public:
-        FileReader(std::string path, bool alignPages)
-            : path_(std::move(path)), alignPages_(alignPages)
+        explicit FileReader(const std::string& path, bool align_pages)
+            : fd_(open(path.c_str(), O_RDONLY | O_CLOEXEC)),
+              align_pages_(align_pages)
         {
-            fd_ = open(path_.c_str(), O_RDONLY | O_CLOEXEC);
             if (fd_ < 0) {
-                throw std::runtime_error(PosixUtil::SysError("unable to open source " + path_));
+                throw std::runtime_error(PosixUtil::SysError("unable to open source " + path));
             }
         }
 
@@ -92,62 +122,63 @@ namespace avml {
 
         FileReader(const FileReader&) = delete;
         FileReader& operator=(const FileReader&) = delete;
+        FileReader(FileReader&&) noexcept = default;
+        FileReader& operator=(FileReader&&) noexcept = default;
 
-        int Fd() const {
-            return fd_;
-        }
+        int Fd() const { return fd_; }
+        bool AlignPages() const { return align_pages_; }
 
-        bool AlignPages() const {
-            return alignPages_;
-        }
-
-        const std::string& Path() const {
-            return path_;
-        }
-
-        void SeekTo(uint64_t offset) {
-            if (lseek(fd_, static_cast<off_t>(offset), SEEK_SET) < 0) {
-                throw std::runtime_error(PosixUtil::SysError("unable to seek source"));
+        int SeekTo(uint64_t offset) {
+            if (lseek64(fd_, static_cast<off64_t>(offset), SEEK_SET) < 0) {
+                std::cout << PosixUtil::SysError("unable to seek source") << std::endl;
+                return 1;
             }
+            return 0;
         }
 
-        void ReadExact(void* out, size_t size) {
+        int ReadExact(void* out, size_t size) const {
             auto* p = static_cast<uint8_t*>(out);
             size_t done = 0;
 
             while (done < size) {
                 ssize_t r = read(fd_, p + done, size - done);
                 if (r < 0) {
-                    throw std::runtime_error(
-                        PosixUtil::SysError("unable to read memory page"));
+                    if (errno == EINTR) continue;
+                    std::cout << "unable to read file" << std::endl;
+                    return 1;
                 }
                 if (r == 0) {
-                    throw std::runtime_error("unexpected EOF while reading source");
+                    std::cout << "unexpected EOF" << std::endl;
+                    return 1;
                 }
                 done += static_cast<size_t>(r);
             }
+            return 0;
         }
 
-        void PreadExact(void* out, size_t size, uint64_t offset) {
+        int ReadFromPositionExact(void* out, size_t size, uint64_t offset) const {
             auto* p = static_cast<uint8_t*>(out);
             size_t done = 0;
 
             while (done < size) {
-                ssize_t r = pread(fd_, p + done, size - done, static_cast<off_t>(offset + done));
+                ssize_t r = pread64(fd_, p + done, size - done, static_cast<off64_t>(offset + done));
                 if (r < 0) {
-                    throw std::runtime_error(PosixUtil::SysError("pread"));
+                    if (errno == EINTR) continue;
+                    std::cout << "unable to read file" << std::endl;
+                    return 1;
                 }
                 if (r == 0) {
-                    throw std::runtime_error("unexpected EOF");
+                    std::cout << "unexpected EOF" << std::endl;
+                    return 1;
                 }
                 done += static_cast<size_t>(r);
             }
+            return 0;
         }
 
     private:
-        std::string path_;
         int fd_ = -1;
-        bool alignPages_ = false;
+        bool align_pages_ = false;
     };
 
     class FileWriter {
@@ -178,17 +209,19 @@ namespace avml {
             return fd_;
         }
 
-        void WriteAll(const void* data, size_t size) {
+        int WriteAll(const void* data, size_t size) {
             const auto* p = static_cast<const uint8_t*>(data);
             size_t done = 0;
 
             while (done < size) {
                 ssize_t w = write(fd_, p + done, size - done);
                 if (w < 0) {
-                    throw std::runtime_error(PosixUtil::SysError("unable to write"));
+                    std::cout << PosixUtil::SysError("unable to write") << std::endl;
+                    return 1;
                 }
                 done += static_cast<size_t>(w);
             }
+            return 0;
         }
 
     private:
@@ -198,88 +231,70 @@ namespace avml {
 
     class IoMemParser {
     public:
-        std::vector<Range64> ParseSystemRam(const char* path = "/proc/iomem") const {
-            FILE* f = std::fopen(path, "r");
-            if (!f) {
-                throw std::runtime_error(
-                    PosixUtil::SysError("unable to read /proc/iomem"));
+        std::optional<std::vector<Range64>> ParseSystemRam() const {
+            std::ifstream file(path_);
+            if (!file.is_open()) {
+                std::cout << "Error opening file " << path_ << std::endl;
+                return std::nullopt;
             }
 
             std::vector<Range64> ranges;
-            char* line = nullptr;
-            size_t cap = 0;
+            std::string file_line;
 
-            try {
-                while (true) {
-                    ssize_t n = getline(&line, &cap, f);
-                    if (n < 0) {
-                        break;
-                    }
+            while (std::getline(file, file_line)) {
+                const std::string& iomem_line{file_line};
 
-                    std::string iomem_line(line);
-                    if (!iomem_line.empty() && iomem_line.back() == '\n') {
-                        iomem_line.pop_back();
-                    }
-
-                    if (!iomem_line.empty() && iomem_line[0] == ' ') {
-                        continue;
-                    }
-
-                    const std::string suffix = " : System RAM";
-                    if (iomem_line.size() < suffix.size() || iomem_line.compare(iomem_line.size() - suffix.size(), suffix.size(), suffix) != 0) {
-                        continue;
-                    }
-
-                    auto sp = iomem_line.find(' ');
-                    std::string rangeToken = (sp == std::string::npos) ? iomem_line : iomem_line.substr(0, sp);
-
-                    auto dash = rangeToken.find('-');
-                    if (dash == std::string::npos) {
-                        throw std::runtime_error("unable to parse line: " + iomem_line);
-                    }
-
-                    const std::string startHex = rangeToken.substr(0, dash);
-                    const std::string endHex = rangeToken.substr(dash + 1);
-
-                    uint64_t start = ParseHexU64(startHex);
-                    uint64_t end = ParseHexU64(endHex);
-
-                    if (start == 0 && end == 0) {
-                        throw std::runtime_error(
-                            "need CAP_SYS_ADMIN to read /proc/iomem (start==0,end==0)");
-                    }
-
-                    ranges.push_back(Range64{start, end});
+                if (!iomem_line.empty() && iomem_line[0] == ' ') {
+                    continue;
                 }
 
-                if (line) {
-                    std::free(line);
+                const std::string suffix = " : System RAM";
+                if (iomem_line.size() < suffix.size() || iomem_line.compare(iomem_line.size() - suffix.size(), suffix.size(), suffix) != 0) {
+                    continue;
                 }
-                std::fclose(f);
 
-                return MergeRanges(std::move(ranges));
+                auto sp = iomem_line.find(' ');
+                std::string rangeToken = (sp == std::string::npos) ? iomem_line : iomem_line.substr(0, sp);
+
+                auto dash = rangeToken.find('-');
+                if (dash == std::string::npos) {
+                    std::cout << "unable to parse line: " << iomem_line << std::endl;
+                    return std::nullopt;
+                }
+
+                const std::string startHex = rangeToken.substr(0, dash);
+                const std::string endHex = rangeToken.substr(dash + 1);
+
+                std::optional<uint64_t> start = ParseHexU64(startHex);
+                std::optional<uint64_t> end = ParseHexU64(endHex);
+                if (!start.has_value() || !end.has_value()) {
+                    return std::nullopt;
+                }
+
+                if (start == 0 && end == 0) {
+                    std::cout << "need CAP_SYS_ADMIN to read /proc/iomem (start==0,end==0)" << std::endl;
+                    return std::nullopt;
+                }
+
+                ranges.push_back(Range64{start.value(), end.value()});
             }
-            catch (...) {
-                if (line) {
-                    std::free(line);
-                }
-                std::fclose(f);
-                throw;
-            }
+
+            return MergeRanges(std::move(ranges));
         }
 
     private:
-        static uint64_t ParseHexU64(const std::string& s) {
+        std::optional<uint64_t> ParseHexU64(const std::string& s) const {
             char* endp = nullptr;
-            errno = 0;
+            errno = 0;   // сброс предыдущих ошибок, чтобы отловить переполнение при конвертации из 16-ричной системы
             unsigned long long v = std::strtoull(s.c_str(), &endp, 16);
             if (errno != 0 || endp == s.c_str() || *endp != '\0') {
-                throw std::runtime_error("unable to parse hex: " + s);
+                std::cout << "unable to parse hex string: " << s << std::endl;
+                return std::nullopt;
             }
-            return static_cast<uint64_t>(v);
+            return v;
         }
 
-        static std::vector<Range64> MergeRanges(std::vector<Range64> ranges) {
+        std::vector<Range64> MergeRanges(std::vector<Range64> ranges) const {
             std::vector<Range64> result;
 
             std::sort(
@@ -290,101 +305,100 @@ namespace avml {
                 }
             );
 
-            for (const auto& r : ranges) {
+            for (const auto& range : ranges) {
                 if (result.empty()) {
-                    result.push_back(r);
+                    result.push_back(range);
                     continue;
                 }
 
                 auto& back = result.back();
-                if (back.end >= r.start) {
-                    back.end = r.end;
+                if (back.end >= range.start) {
+                    back.end = range.end;
                 } else {
-                    result.push_back(r);
+                    result.push_back(range);
                 }
             }
-
             return result;
         }
+
+    private:
+        const std::string path_{"/proc/iomem"};
     };
 
     class LimeFormatWriter {
     public:
-        static void WriteHeader(FileWriter& dst, const Range64& range) {
-            WriteU32Le(dst, LIME_MAGIC);
-            WriteU32Le(dst, LIME_VERSION);
-            WriteU64Le(dst, range.start);
+        static int WriteHeader(FileWriter& dst, const Range64& range) {
+            if (WriteU32Le(dst, LIME_MAGIC) != 0) return 1;
+            if (WriteU32Le(dst, LIME_VERSION) != 0) return 1;
+            if (WriteU64Le(dst, range.start) != 0) return 1;
 
             const uint64_t endMinus1 = (range.end == 0) ? 0 : (range.end - 1);
-            WriteU64Le(dst, endMinus1);
-            WriteU64Le(dst, 0);
+            if (WriteU64Le(dst, endMinus1) != 0) return 1;
+            if (WriteU64Le(dst, 0) != 0) return 1;
+            return 0;
         }
 
     private:
-        static void WriteU32Le(FileWriter& dst, uint32_t v) {
+        static int WriteU32Le(FileWriter& dst, uint32_t v) {
             uint8_t b[4];
             b[0] = static_cast<uint8_t>(v & 0xff);
             b[1] = static_cast<uint8_t>((v >> 8) & 0xff);
             b[2] = static_cast<uint8_t>((v >> 16) & 0xff);
             b[3] = static_cast<uint8_t>((v >> 24) & 0xff);
-            dst.WriteAll(b, sizeof(b));
+            return dst.WriteAll(b, sizeof(b));
         }
 
-        static void WriteU64Le(FileWriter& dst, uint64_t v) {
+        static int WriteU64Le(FileWriter& dst, uint64_t v) {
             uint8_t b[8];
             for (int i = 0; i < 8; ++i) {
                 b[i] = static_cast<uint8_t>((v >> (8 * i)) & 0xff);
             }
-            dst.WriteAll(b, sizeof(b));
+            return dst.WriteAll(b, sizeof(b));
         }
     };
 
     class MemoryCopier {
     public:
-        static void CopyBlockV1(FileReader& src, FileWriter& dst, const Range64& range) {
-            LimeFormatWriter::WriteHeader(dst, range);
+        static int CopyBlock(FileReader& src, FileWriter& dst, const Range64& range) {
+            if (LimeFormatWriter::WriteHeader(dst, range) != 0) {
+                return 1;
+            }
 
             const uint64_t len64 = range.Length();
             if (len64 > std::numeric_limits<size_t>::max()) {
-                throw std::runtime_error("range too large for size_t");
+                std::cout << "range too large for size_t" << std::endl;
+                return 1;
             }
 
             const size_t size = static_cast<size_t>(len64);
 
             if (len64 > MAX_BLOCK_SIZE) {
-                CopyStreaming(src, dst, size, src.AlignPages());
-                return;
+                return CopyStreaming(src, dst, size, src.AlignPages());
             }
 
             std::vector<uint8_t> buffer(size, 0);
 
             if (src.AlignPages()) {
-                FillAligned(src, buffer);
+                if (FillAligned(src, buffer) != 0) {
+                    return 1;
+                }
             }
             else if (!buffer.empty()) {
-                src.ReadExact(buffer.data(), buffer.size());
-            }
-
-            bool allZero = true;
-            for (uint8_t b : buffer) {
-                if (b != 0) {
-                    allZero = false;
-                    break;
+                if (src.ReadExact(buffer.data(), buffer.size()) != 0) {
+                    return 1;
                 }
             }
 
-            // header is already written, but zero-block payload is omitted.
-            if (allZero) {
-                return;
-            }
-
             if (!buffer.empty()) {
-                dst.WriteAll(buffer.data(), buffer.size());
+                if (dst.WriteAll(buffer.data(), buffer.size()) != 0) {
+                    return 1;
+                }
             }
+            return 0;
         }
 
     private:
-        static void CopyStreaming(
+        static int CopyStreaming(
             FileReader& src,
             FileWriter& dst,
             size_t size,
@@ -396,40 +410,42 @@ namespace avml {
                 size_t remaining = size;
 
                 while (remaining >= PAGE_SIZE) {
-                    src.ReadExact(page.data(), PAGE_SIZE);
-                    dst.WriteAll(page.data(), PAGE_SIZE);
+                    if (src.ReadExact(page.data(), PAGE_SIZE) != 0) return 1;
+                    if (dst.WriteAll(page.data(), PAGE_SIZE) != 0) return 1;
                     remaining -= PAGE_SIZE;
                 }
 
                 if (remaining > 0) {
                     std::vector<uint8_t> tail(remaining, 0);
-                    src.ReadExact(tail.data(), remaining);
-                    dst.WriteAll(tail.data(), remaining);
+                    if (src.ReadExact(tail.data(), remaining) != 0) return 1;
+                    if (dst.WriteAll(tail.data(), remaining) != 0) return 1;
                 }
-                return;
-            }
+            } else {
+                std::vector<uint8_t> chunk(1 << 20);
+                size_t remaining = size;
 
-            std::vector<uint8_t> chunk(1 << 20);
-            size_t remaining = size;
-
-            while (remaining > 0) {
-                size_t want = std::min(remaining, chunk.size());
-                src.ReadExact(chunk.data(), want);
-                dst.WriteAll(chunk.data(), want);
-                remaining -= want;
+                while (remaining > 0) {
+                    size_t want = std::min(remaining, chunk.size());
+                    if (src.ReadExact(chunk.data(), want) != 0) return 1;
+                    if (dst.WriteAll(chunk.data(), want) != 0) return 1;
+                    remaining -= want;
+                }
             }
+            return 0;
         }
 
-        static void FillAligned(FileReader& src, std::vector<uint8_t>& buffer) {
+        static int FillAligned(FileReader& src, std::vector<uint8_t>& buffer) {
             if (buffer.empty()) {
-                return;
+                return 0;
             }
 
             size_t done = 0;
             std::vector<uint8_t> page(PAGE_SIZE);
 
             while (done + PAGE_SIZE <= buffer.size()) {
-                src.ReadExact(page.data(), PAGE_SIZE);
+                if (src.ReadExact(page.data(), PAGE_SIZE) != 0) {
+                    return 1;
+                }
                 std::memcpy(buffer.data() + done, page.data(), PAGE_SIZE);
                 done += PAGE_SIZE;
             }
@@ -440,6 +456,7 @@ namespace avml {
                 src.ReadExact(tmp.data(), tail);
                 std::memcpy(buffer.data() + done, tmp.data(), tail);
             }
+            return 0;
         }
     };
 
@@ -449,18 +466,31 @@ namespace avml {
             : src_(src)
         {}
 
-        std::vector<Block> BuildBlocks(const std::vector<Range64>& memoryRanges) {
+        std::optional<std::vector<Block>> BuildBlocks(const std::vector<Range64>& memoryRanges) {
             Elf64_Ehdr eh{};
-            src_.PreadExact(&eh, sizeof(eh), 0);
+            int ret = src_.ReadFromPositionExact(&eh, sizeof(eh), 0);
+            if (ret != 0) {
+                std::cout << "Failed to read elf header: Elf64_Ehdr" << std::endl;
+                return std::nullopt;
+            }
 
-            ValidateElfHeader(eh);
+            ret = ValidateElfHeader(eh);
+            if (ret != 0) {
+                std::cout << "Failed to validate elf header: Elf64_Ehdr" << std::endl;
+                return std::nullopt;
+            }
 
             if (eh.e_phentsize != sizeof(Elf64_Phdr)) {
-                throw std::runtime_error("unable to parse elf: unexpected phdr size");
+                std::cout << "unable to parse elf: unexpected phdr size" << std::endl;
+                return std::nullopt;
             }
 
             std::vector<Elf64_Phdr> phdrs(eh.e_phnum);
-            src_.PreadExact(phdrs.data(),phdrs.size() * sizeof(Elf64_Phdr),eh.e_phoff);
+            ret = src_.ReadFromPositionExact(phdrs.data(),phdrs.size() * sizeof(Elf64_Phdr),eh.e_phoff);
+            if (ret != 0) {
+                std::cout << "Failed to read elf header: Elf64_Phdr" << std::endl;
+                return std::nullopt;
+            }
 
             std::vector<Elf64_Phdr> loads;
             for (const auto& ph : phdrs) {
@@ -478,10 +508,12 @@ namespace avml {
             );
 
             if (loads.empty()) {
-                throw std::runtime_error("unable to create snapshot: no initial addresses");
+                std::cout << "unable to create snapshot: no initial addresses" << std::endl;
+                return std::nullopt;
             }
             if (memoryRanges.empty()) {
-                throw std::runtime_error("unable to create snapshot: no initial memory range");
+                std::cout << "unable to create snapshot: no initial memory range" << std::endl;
+                return std::nullopt;
             }
 
             const uint64_t firstVaddr = loads.front().p_vaddr;
@@ -493,20 +525,19 @@ namespace avml {
 
             for (const auto& ph : loads) {
                 if (ph.p_vaddr < start) {
-                    throw std::runtime_error("unable to calculate start address");
+                    std::cout << "unable to calculate start address" << std::endl;
+                    return std::nullopt;
                 }
 
                 const uint64_t entryStart = ph.p_vaddr - start;
-
                 if (ph.p_memsz > std::numeric_limits<uint64_t>::max() - entryStart) {
-                    throw std::runtime_error("unable to calculate end address");
+                    std::cout << "unable to calculate end address" << std::endl;
+                    return std::nullopt;
                 }
 
                 const uint64_t entryEnd = entryStart + ph.p_memsz;
-
                 physicalRanges.push_back(Block{ph.p_offset, Range64{entryStart, entryEnd}});
             }
-
             return FindKcoreBlocks(memoryRanges, physicalRanges);
         }
 
@@ -549,22 +580,26 @@ namespace avml {
 
         FileReader& src_;
 
-        static void ValidateElfHeader(const Elf64_Ehdr& eh) {
+        static int ValidateElfHeader(const Elf64_Ehdr& eh) {
             if (!(eh.e_ident[0] == ELFMAG0 &&
                 eh.e_ident[1] == ELFMAG1 &&
                 eh.e_ident[2] == ELFMAG2 &&
                 eh.e_ident[3] == ELFMAG3))
             {
-                throw std::runtime_error("unable to parse elf: bad magic");
+                std::cout << "unable to parse elf: bad magic" << std::endl;
+                return 1;
             }
 
             if (eh.e_ident[4] != ELFCLASS64) {
-                throw std::runtime_error("unable to parse elf: not ELF64");
+                std::cout << "unable to parse elf: not ELF64" << std::endl;
+                return 1;
             }
 
             if (eh.e_ident[5] != ELFDATA2LSB) {
-                throw std::runtime_error("unable to parse elf: not LSB");
+                std::cout << "unable to parse elf: not LSB" << std::endl;
+                return 1;
             }
+            return 0;
         }
 
         static bool Contains(const Range64& r, uint64_t value) {
@@ -597,10 +632,7 @@ namespace avml {
                         range.start = header.range.end;
                     }
                 }
-
-                (void)finished;
             }
-
             return result;
         }
     };
@@ -608,8 +640,8 @@ namespace avml {
     class IDumpStrategy {
     public:
         virtual ~IDumpStrategy() = default;
-        virtual const char* Name() const = 0;
-        virtual void Dump(const std::vector<Range64>& memoryRanges,const std::string& destinationPath) = 0;
+        virtual std::string Name() const = 0;
+        virtual int Dump(const std::vector<Range64>& memoryRanges,const std::string& destinationPath) = 0;
     };
 
     /*class PhysicalMemoryDumpStrategy : public IDumpStrategy
@@ -667,98 +699,110 @@ namespace avml {
         std::string sourcePath_;
     };*/
 
-    class KCoreDumpStrategy : public IDumpStrategy
-    {
+    class KCoreDumpStrategy : public IDumpStrategy {
     public:
-        const char* Name() const override {
-            return "/proc/kcore";
+        std::string Name() const override {
+            return strategy_name_;
         }
 
-        void Dump(const std::vector<Range64>& memoryRanges,const std::string& destinationPath) override {
+        int Dump(const std::vector<Range64>& memoryRanges,const std::string& destinationPath) override {
             if (!PosixUtil::IsKCoreOk()) {
-                throw std::runtime_error("locked down /proc/kcore");
+                std::cout << "locked down /proc/kcore" << std::endl;
+                return 1;
             }
 
-            FileReader src("/proc/kcore", true);
-            FileWriter dst(destinationPath);
+            try {
+                FileReader src("/proc/kcore", true);
+                FileWriter dst(destinationPath);
 
-            KCoreElfParser parser(src);
-            const std::vector<Block> blocks = parser.BuildBlocks(memoryRanges);
-
-            for (const auto& block : blocks) {
-                if (block.offset > 0) {
-                    src.SeekTo(block.offset);
+                KCoreElfParser parser(src);
+                std::optional<std::vector<Block>> blocks = parser.BuildBlocks(memoryRanges);
+                if (!blocks.has_value()) {
+                    std::cout << "failed to parse ELF file" << std::endl;
+                    return 1;
                 }
-                MemoryCopier::CopyBlockV1(src, dst, block.range);
-            }
-        }
-    };
 
-    class DumpManager {
-    public:
-        int Run(const std::string& destinationPath) {
-            const std::vector<Range64> ranges = iomem_parser_.ParseSystemRam();
-
-            std::vector<std::unique_ptr<IDumpStrategy>> strategies;
-            // strategies.push_back(std::make_unique<PhysicalMemoryDumpStrategy>("/dev/crash"));
-            strategies.push_back(std::make_unique<KCoreDumpStrategy>());
-            // strategies.push_back(std::make_unique<PhysicalMemoryDumpStrategy>("/dev/mem"));
-
-            std::vector<std::string> errors;
-            errors.reserve(strategies.size());
-
-            for (auto& strategy : strategies) {
-                try {
-                    strategy->Dump(ranges, destinationPath);
-                    return 0;
+                for (const auto& block : blocks.value()) {
+                    if (block.offset > 0) {
+                        int ret = src.SeekTo(block.offset);
+                        if (ret != 0) {
+                            return 1;
+                        }
+                    }
+                    if (MemoryCopier::CopyBlock(src, dst, block.range) == 1) {
+                        return 1;
+                    }
                 }
-                catch (const std::exception& e) {
-                    errors.push_back(std::string("    ") + e.what());
-                }
+                return 0;
+            } catch (std::exception& e) {
+                std::cout << e.what() << std::endl;
+                return 1;
             }
-
-            std::cerr << "error: unable to create memory snapshot\n";
-            std::cerr << "    \n";
-            for (const auto& err : errors) {
-                std::cerr << err << '\n';
-            }
-            return 2;
         }
 
     private:
-        IoMemParser iomem_parser_;
+        const std::string strategy_name_ = "/proc/kcore";
+
     };
 
-    static void usage(const char* prog) {
-        std::cerr
-            << "Usage:\n"
-            << "  sudo " << prog << " dump.lime\n"
-            << "Notes:\n"
-            << "  - LiME v1 only\n"
-            << "  - Sources: /dev/crash -> /proc/kcore -> /dev/mem\n";
-    }
+    enum class ModuleResult : int {
+        kError = 0,
+        kSuccess = 1,
+        kNotFound = 2,
+        kNotSupported = 3
+    };
+
+    class IModuleImpl {
+    public:
+        virtual ~IModuleImpl() = default;
+        virtual ModuleResult Run() = 0;
+    };
+
+    class DumpManager final: public IModuleImpl {
+    public:
+        explicit DumpManager(const std::string& dump_file_path)
+            : dump_file_path_(dump_file_path) {
+            // strategies.push_back(std::make_unique<PhysicalMemoryDumpStrategy>("/dev/crash"));
+            strategies_.push_back(std::make_unique<KCoreDumpStrategy>());
+            // strategies.push_back(std::make_unique<PhysicalMemoryDumpStrategy>("/dev/mem"));
+        }
+        ~DumpManager() override = default;
+
+        ModuleResult Run() override {
+            std::optional<std::vector<Range64>> ranges = io_mem_parser_.ParseSystemRam();
+            if (!ranges.has_value()) {
+                return ModuleResult::kError;
+            }
+
+            for (const auto& strategy : strategies_) {
+                int ret = strategy->Dump(ranges.value(), dump_file_path_);
+                if (ret == 0) {
+                    return ModuleResult::kSuccess;
+                }
+            }
+            return ModuleResult::kError;
+        }
+
+    private:
+        std::string dump_file_path_;
+        std::vector<std::unique_ptr<IDumpStrategy>> strategies_;
+
+        IoMemParser io_mem_parser_;
+    };
 } // namespace avml
 
-int main(int argc, char** argv)
-{
-    std::string dst = "dump.lime";
-    if (argc == 2)
-    {
-        dst = argv[1];
-    }
-
-    if (::geteuid() != 0)
-    {
+int main() {
+    if (geteuid() != 0) {
         std::cerr << "[WARNING] run as root for full memory access\n";
     }
 
-    try
-    {
-        avml::DumpManager manager;
-        return manager.Run(dst);
+    try {
+        const std::string dst = "dump.lime";
+        avml::DumpManager manager(dst);
+        avml::ModuleResult ret = manager.Run();
+        return (ret != avml::ModuleResult::kError) ? 0 : 1;
     }
-    catch (const std::exception& e)
-    {
+    catch (const std::exception& e) {
         std::cerr << "fatal: " << e.what() << '\n';
         return 3;
     }
